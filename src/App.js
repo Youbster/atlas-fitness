@@ -25,14 +25,25 @@ export default function App() {
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const constraints = {
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.play();
       }
       setCaptureMode('camera');
       setError(null);
     } catch (err) {
-      setError('Camera access denied. Try file upload instead.');
+      console.error('Camera error:', err);
+      setError('Camera access denied or not available. Please use photo upload instead.');
     }
   };
 
@@ -40,25 +51,41 @@ export default function App() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (video && canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = canvas.toDataURL('image/jpeg');
-      setUploadedImage(imageData);
-      if (video.srcObject) {
-        video.srcObject.getTracks().forEach(track => track.stop());
+      try {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0);
+        const imageData = canvas.toDataURL('image/jpeg', 0.8);
+        setUploadedImage(imageData);
+        
+        if (video.srcObject) {
+          video.srcObject.getTracks().forEach(track => track.stop());
+        }
+        setCaptureMode(null);
+        detectEquipmentFromImage(imageData);
+      } catch (err) {
+        console.error('Capture error:', err);
+        setError('Failed to capture photo. Try again.');
       }
-      setCaptureMode(null);
-      detectEquipmentFromImage(imageData);
     }
   };
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
+      if (file.size > 5000000) {
+        setError('Image too large. Please use a smaller image.');
+        return;
+      }
+      
       const reader = new FileReader();
       reader.onload = (event) => {
         setUploadedImage(event.target.result);
         detectEquipmentFromImage(event.target.result);
+      };
+      reader.onerror = () => {
+        setError('Failed to read image.');
       };
       reader.readAsDataURL(file);
     }
@@ -67,6 +94,7 @@ export default function App() {
   const detectEquipmentFromImage = async (imageBase64) => {
     setDetectionLoading(true);
     setError(null);
+    
     try {
       const response = await fetch('/api/detect-equipment', {
         method: 'POST',
@@ -74,20 +102,24 @@ export default function App() {
         body: JSON.stringify({ imageBase64 }),
       });
 
-      if (!response.ok) {
-        throw new Error('Detection failed');
+      if (response.ok) {
+        const data = await response.json();
+        const equipment = data.equipment || [];
+        if (equipment.length > 0) {
+          setSelectedEquipment(equipment);
+          setStep('equipment');
+          return;
+        }
       }
-
-      const data = await response.json();
-      setSelectedEquipment(data.equipment || ['dumbbells', 'bodyweight']);
-      setStep('equipment');
     } catch (err) {
-      setError('Detection failed. Add equipment manually.');
-      setSelectedEquipment(['dumbbells', 'bodyweight']);
-      setStep('equipment');
-    } finally {
-      setDetectionLoading(false);
+      console.error('Detection error:', err);
     }
+    
+    // Fallback: use defaults and show message
+    setError('Could not detect equipment. Please add manually or we use defaults.');
+    setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight']);
+    setStep('equipment');
+    setDetectionLoading(false);
   };
 
   const addEquipment = () => {
@@ -118,14 +150,15 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error('Generation failed');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to generate');
       }
 
       const data = await response.json();
       setGeneratedWorkout(data);
       setStep('results');
     } catch (err) {
-      setError('Failed to generate workout. Try again.');
+      setError(`Error: ${err.message}. Check that CLAUDE_API_KEY is set in Vercel.`);
     }
     setLoading(false);
   };
@@ -209,25 +242,26 @@ export default function App() {
                 <button onClick={startCamera} style={{ padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', color: '#fff' }}>
                   <div style={{ fontSize: 40, marginBottom: '1rem' }}>📱</div>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Take Photo</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af' }}>AI detects equipment</div>
+                  <div style={{ fontSize: 13, color: '#9ca3af' }}>Allow camera access</div>
                 </button>
                 <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', color: '#fff' }}>
                   <div style={{ fontSize: 40, marginBottom: '1rem' }}>📁</div>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Upload Photo</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af' }}>AI analyzes image</div>
+                  <div style={{ fontSize: 13, color: '#9ca3af' }}>Select from device</div>
                   <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
                 </label>
               </div>
-              <button onClick={() => { setSelectedEquipment([]); setStep('equipment'); }} style={{ width: '100%', padding: '1rem', ...buttonStyle }}>Skip & Enter Equipment Manually</button>
+              <button onClick={() => { setSelectedEquipment(['dumbbells', 'resistance bands']); setStep('equipment'); }} style={{ width: '100%', padding: '1rem', ...buttonStyle }}>Skip & Enter Equipment Manually</button>
             </div>
           )}
 
           {captureMode === 'camera' && (
             <div style={{ textAlign: 'center' }}>
-              <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxWidth: '500px', borderRadius: '16px', marginBottom: '1.5rem' }} />
+              <h2 style={{ fontSize: '20px', marginBottom: '1rem' }}>Point camera at your gym setup</h2>
+              <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', maxWidth: '100%', borderRadius: '16px', marginBottom: '1.5rem', backgroundColor: '#000', aspectRatio: '1' }} />
               <canvas ref={canvasRef} width={500} height={500} style={{ display: 'none' }} />
               <div style={{ display: 'flex', gap: '1rem' }}>
-                <button onClick={capturePhoto} style={{ flex: 1, padding: '0.875rem', ...primaryButtonStyle }}>Capture</button>
+                <button onClick={capturePhoto} style={{ flex: 1, padding: '0.875rem', ...primaryButtonStyle }}>📸 Capture</button>
                 <button onClick={() => { if (videoRef.current?.srcObject) { videoRef.current.srcObject.getTracks().forEach(track => track.stop()); } setCaptureMode(null); }} style={{ flex: 1, padding: '0.875rem', ...buttonStyle }}>Cancel</button>
               </div>
             </div>
@@ -236,12 +270,19 @@ export default function App() {
           {step === 'equipment' && (
             <div>
               <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Your Equipment</h2>
-              {detectionLoading && <p style={{ color: '#60a5fa', marginBottom: '1rem' }}>Analyzing image...</p>}
+              {detectionLoading && <p style={{ color: '#60a5fa', marginBottom: '1rem' }}>🔍 Analyzing image...</p>}
               {uploadedImage && !detectionLoading && <img src={uploadedImage} alt="Gym" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem' }} />}
               <div style={{ marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: '14px', marginBottom: '1rem' }}>Selected: {selectedEquipment.length > 0 ? selectedEquipment.map((e, i) => <span key={i} onClick={() => removeEquipment(e)} style={{ background: 'rgba(59, 130, 246, 0.2)', padding: '0.4rem 0.8rem', borderRadius: '20px', marginRight: '0.5rem', cursor: 'pointer' }}>{e} ✕</span>) : 'None'}</p>
+                <p style={{ fontSize: '14px', marginBottom: '1rem' }}>Selected equipment:</p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
+                  {selectedEquipment.length > 0 ? selectedEquipment.map((e, i) => (
+                    <span key={i} onClick={() => removeEquipment(e)} style={{ background: 'rgba(59, 130, 246, 0.2)', padding: '0.4rem 0.8rem', borderRadius: '20px', cursor: 'pointer', fontSize: '14px' }}>
+                      {e} ✕
+                    </span>
+                  )) : <p style={{ color: '#9ca3af' }}>None selected</p>}
+                </div>
                 <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                  <input type="text" placeholder="Add equipment" value={manualEquipment} onChange={(e) => setManualEquipment(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addEquipment()} style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff' }} />
+                  <input type="text" placeholder="Add equipment (e.g., dumbbells, bands)" value={manualEquipment} onChange={(e) => setManualEquipment(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addEquipment()} style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff' }} />
                   <button onClick={addEquipment} style={buttonStyle}>Add</button>
                 </div>
               </div>
@@ -251,7 +292,7 @@ export default function App() {
 
           {step === 'goal' && (
             <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Your Goal</h2>
+              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>What's Your Goal?</h2>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem' }}>
                 {['Muscle Gain', 'Fat Loss', 'Endurance', 'General Fitness'].map(g => (
                   <button key={g} onClick={() => { setGoal(g); setStep('difficulty'); }} style={{ ...cardStyle, border: goal === g ? '2px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.15)', background: goal === g ? 'rgba(59, 130, 246, 0.2)' : cardStyle.background, textAlign: 'center', padding: '1.5rem' }}>{g}</button>
@@ -262,7 +303,7 @@ export default function App() {
 
           {step === 'difficulty' && (
             <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Difficulty</h2>
+              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Difficulty Level</h2>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
                 {['beginner', 'intermediate', 'advanced'].map(d => (
                   <button key={d} onClick={() => { setDifficulty(d); setStep('time'); }} style={{ ...cardStyle, border: difficulty === d ? '2px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.15)', background: difficulty === d ? 'rgba(59, 130, 246, 0.2)' : cardStyle.background, textAlign: 'center', padding: '1.5rem', textTransform: 'capitalize' }}>{d}</button>
@@ -273,45 +314,54 @@ export default function App() {
 
           {step === 'time' && (
             <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Duration: {timeLimit}m</h2>
+              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Duration: {timeLimit} minutes</h2>
               <input type="range" min="10" max="120" step="5" value={timeLimit} onChange={(e) => setTimeLimit(parseInt(e.target.value))} style={{ width: '100%', marginBottom: '1.5rem' }} />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
+                {[15, 30, 45, 60].map(t => (
+                  <button key={t} onClick={() => setTimeLimit(t)} style={{ ...cardStyle, border: timeLimit === t ? '2px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.15)', background: timeLimit === t ? 'rgba(59, 130, 246, 0.2)' : cardStyle.background, textAlign: 'center', padding: '1rem' }}>{t}m</button>
+                ))}
+              </div>
               <button onClick={() => setStep('limits')} style={{ width: '100%', padding: '0.875rem', ...primaryButtonStyle }}>Next</button>
             </div>
           )}
 
           {step === 'limits' && (
             <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Any Injuries?</h2>
-              <textarea placeholder="e.g., weak back, no jumping..." value={limitations} onChange={(e) => setLimitations(e.target.value)} style={{ width: '100%', padding: '0.875rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff', minHeight: '80px', marginBottom: '1.5rem', fontFamily: 'inherit' }} />
-              <button onClick={generateWorkout} disabled={loading} style={{ width: '100%', padding: '0.875rem', ...primaryButtonStyle, opacity: loading ? 0.7 : 1 }}>{loading ? 'Generating...' : 'Generate Workout'}</button>
+              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Any Injuries or Limitations?</h2>
+              <textarea placeholder="e.g., weak back, no jumping, shoulder pain..." value={limitations} onChange={(e) => setLimitations(e.target.value)} style={{ width: '100%', padding: '0.875rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff', minHeight: '100px', marginBottom: '1.5rem', fontFamily: 'inherit', resize: 'vertical' }} />
+              <button onClick={generateWorkout} disabled={loading} style={{ width: '100%', padding: '0.875rem', ...primaryButtonStyle, opacity: loading ? 0.7 : 1 }}>{loading ? '⚡ Generating...' : '🚀 Generate Workout'}</button>
             </div>
           )}
 
           {step === 'results' && generatedWorkout && (
             <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem', fontStyle: 'italic' }}>"{generatedWorkout.gymSummary}"</h2>
+              <h2 style={{ fontSize: '20px', marginBottom: '1.5rem', fontStyle: 'italic', color: '#60a5fa' }}>"{generatedWorkout.gymSummary}"</h2>
 
-              <h3 style={{ fontSize: '18px', marginBottom: '1rem' }}>Warm-Up</h3>
-              <p style={{ marginBottom: '2rem', color: '#d1d5db' }}>{generatedWorkout.warmup}</p>
+              <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>💪 Warm-Up (2-3 min)</h3>
+              <p style={{ marginBottom: '2rem', color: '#d1d5db', fontSize: '14px' }}>{generatedWorkout.warmup}</p>
 
-              <h3 style={{ fontSize: '18px', marginBottom: '1rem' }}>Main Circuit</h3>
+              <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>🔥 Main Workout</h3>
               {generatedWorkout.mainCircuit && generatedWorkout.mainCircuit.map((ex, idx) => (
                 <div key={idx} style={{ ...cardStyle, marginBottom: '1rem' }}>
-                  <p style={{ fontSize: '16px', fontWeight: '600', margin: '0 0 0.5rem' }}>{ex.exercise}</p>
-                  <p style={{ fontSize: '13px', color: '#9ca3af', margin: '0 0 0.25rem' }}>{ex.description}</p>
+                  <p style={{ fontSize: '15px', fontWeight: '600', margin: '0 0 0.5rem', color: '#60a5fa' }}>{ex.exercise}</p>
+                  <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 0.25rem' }}>{ex.description}</p>
                   <p style={{ fontSize: '12px', color: '#6b7280', margin: 0 }}>{ex.duration}</p>
                 </div>
               ))}
 
-              <h3 style={{ fontSize: '18px', marginBottom: '1rem' }}>Cool Down</h3>
-              <p style={{ marginBottom: '2rem', color: '#d1d5db' }}>{generatedWorkout.cooldown}</p>
+              <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>❄️ Cool Down (60 sec)</h3>
+              <p style={{ marginBottom: '2rem', color: '#d1d5db', fontSize: '14px' }}>{generatedWorkout.cooldown}</p>
 
-              <h3 style={{ fontSize: '18px', marginBottom: '1rem' }}>Tips</h3>
-              {generatedWorkout.tips && generatedWorkout.tips.map((tip, idx) => (
-                <div key={idx} style={{ background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '12px', padding: '1rem', marginBottom: '0.75rem' }}>
-                  <p style={{ fontSize: '14px', color: '#fcd34d', margin: 0 }}>✓ {tip}</p>
-                </div>
-              ))}
+              {generatedWorkout.tips && (
+                <>
+                  <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>⚠️ Safety Tips</h3>
+                  {generatedWorkout.tips.map((tip, idx) => (
+                    <div key={idx} style={{ background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '8px', padding: '0.75rem', marginBottom: '0.5rem' }}>
+                      <p style={{ fontSize: '13px', color: '#fcd34d', margin: 0 }}>✓ {tip}</p>
+                    </div>
+                  ))}
+                </>
+              )}
 
               <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
                 <button onClick={shareWorkout} style={{ flex: 1, ...primaryButtonStyle }}>📤 Share</button>
