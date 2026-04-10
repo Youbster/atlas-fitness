@@ -1,378 +1,203 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 
-export default function App() {
-  const [step, setStep] = useState('capture');
-  const [captureMode, setCaptureMode] = useState(null);
-  const [uploadedImage, setUploadedImage] = useState(null);
-  const [selectedEquipment, setSelectedEquipment] = useState([]);
-  const [manualEquipment, setManualEquipment] = useState('');
-  const [goal, setGoal] = useState('');
-  const [difficulty, setDifficulty] = useState('intermediate');
-  const [timeLimit, setTimeLimit] = useState(30);
-  const [limitations, setLimitations] = useState('');
-  const [generatedWorkout, setGeneratedWorkout] = useState(null);
+export default function TestDetection() {
+  const [imageBase64, setImageBase64] = useState(null);
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [detectionLoading, setDetectionLoading] = useState(false);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  const fileRef = useRef(null);
 
-  useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/service-worker.js').catch(() => {});
-    }
-  }, []);
-
-  const startCamera = async () => {
-    try {
-      const constraints = {
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      };
-      
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
-      setCaptureMode('camera');
-      setError(null);
-    } catch (err) {
-      console.error('Camera error:', err);
-      setError('Camera access denied. Use photo upload instead.');
-    }
-  };
-
-  const capturePhoto = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (video && canvas) {
-      try {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0);
-        const imageData = canvas.toDataURL('image/jpeg', 0.8);
-        setUploadedImage(imageData);
-        
-        if (video.srcObject) {
-          video.srcObject.getTracks().forEach(track => track.stop());
-        }
-        setCaptureMode(null);
-        detectEquipmentFromImage(imageData);
-      } catch (err) {
-        console.error('Capture error:', err);
-        setError('Failed to capture photo. Try again.');
-      }
-    }
-  };
-
-  const handleImageUpload = (e) => {
+  const handleImageSelect = (e) => {
     const file = e.target.files[0];
     if (file) {
-      if (file.size > 5000000) {
-        setError('Image too large. Use smaller image.');
-        return;
-      }
-      
       const reader = new FileReader();
       reader.onload = (event) => {
-        setUploadedImage(event.target.result);
-        detectEquipmentFromImage(event.target.result);
-      };
-      reader.onerror = () => {
-        setError('Failed to read image.');
+        setImageBase64(event.target.result);
+        setError(null);
+        setResult(null);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const detectEquipmentFromImage = async (imageBase64) => {
-    setDetectionLoading(true);
+  const testDetection = async () => {
+    if (!imageBase64) {
+      setError('Please select an image first');
+      return;
+    }
+
+    setLoading(true);
     setError(null);
-    
+    setResult(null);
+
     try {
+      console.log('Sending request to /api/detect-equipment');
       const response = await fetch('/api/detect-equipment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageBase64 }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const equipment = data.equipment || [];
-        
-        if (equipment.length > 0) {
-          setSelectedEquipment(equipment);
-          setStep('equipment');
-          setDetectionLoading(false);
-          return;
-        }
-      }
-      
-      // Fallback
-      throw new Error('No equipment detected');
-    } catch (err) {
-      console.error('Detection error:', err);
-      setError('Could not detect equipment. Please add manually.');
-      setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']);
-      setStep('equipment');
-    }
-    
-    setDetectionLoading(false);
-  };
-
-  const addEquipment = () => {
-    if (manualEquipment.trim()) {
-      setSelectedEquipment([...selectedEquipment, manualEquipment.trim()]);
-      setManualEquipment('');
-    }
-  };
-
-  const removeEquipment = (item) => {
-    setSelectedEquipment(selectedEquipment.filter(e => e !== item));
-  };
-
-  const generateWorkout = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch('/api/generate-workout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          equipment: selectedEquipment,
-          goal,
-          difficulty,
-          timeLimit,
-          limitations,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate');
-      }
-
+      console.log('Response status:', response.status);
       const data = await response.json();
-      setGeneratedWorkout(data);
-      setStep('results');
+      console.log('Response data:', data);
+
+      setResult(data);
     } catch (err) {
+      console.error('Error:', err);
       setError(`Error: ${err.message}`);
     }
+
     setLoading(false);
-  };
-
-  const shareWorkout = () => {
-    const text = `Check out my ${difficulty} ${goal} workout! Generated by Atlas Fitness Coach.`;
-    if (navigator.share) {
-      navigator.share({
-        title: 'Atlas Fitness Workout',
-        text: text,
-        url: window.location.href,
-      }).catch(() => {});
-    } else {
-      navigator.clipboard.writeText(text);
-      alert('Workout copied to clipboard!');
-    }
-  };
-
-  const startOver = () => {
-    setStep('capture');
-    setCaptureMode(null);
-    setUploadedImage(null);
-    setSelectedEquipment([]);
-    setGoal('');
-    setDifficulty('intermediate');
-    setTimeLimit(30);
-    setLimitations('');
-    setGeneratedWorkout(null);
-    setError(null);
-  };
-
-  const buttonStyle = {
-    padding: '0.875rem 1.75rem',
-    border: '1px solid rgba(59, 130, 246, 0.3)',
-    background: 'transparent',
-    borderRadius: '12px',
-    cursor: 'pointer',
-    fontSize: '14px',
-    fontWeight: '500',
-    color: '#fff',
-    transition: 'all 0.3s ease',
-  };
-
-  const primaryButtonStyle = {
-    ...buttonStyle,
-    border: '2px solid #3b82f6',
-    background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
-    fontWeight: '600',
-  };
-
-  const cardStyle = {
-    background: 'rgba(30, 41, 59, 0.6)',
-    border: '1px solid rgba(59, 130, 246, 0.15)',
-    borderRadius: '16px',
-    padding: '1.5rem',
-    marginBottom: '1rem',
-    cursor: 'pointer',
   };
 
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%)',
+      background: '#0a0e27',
       color: '#fff',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      padding: '2rem 1rem',
+      padding: '2rem',
+      fontFamily: 'system-ui'
     }}>
-      <div style={{ maxWidth: '800px', margin: '0 auto' }}>
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <h1 style={{ fontSize: '48px', margin: '0 0 0.5rem', background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>ATLAS</h1>
-          <p style={{ fontSize: '16px', color: '#9ca3af', margin: 0 }}>AI-powered fitness coach</p>
+      <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+        <h1>🧪 Equipment Detection Test</h1>
+        
+        <div style={{ background: 'rgba(30, 41, 59, 0.8)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', padding: '2rem', marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '20px', marginBottom: '1rem' }}>1. Upload Image</h2>
+          <button 
+            onClick={() => fileRef.current.click()}
+            style={{
+              width: '100%',
+              padding: '1rem',
+              border: '2px dashed rgba(59, 130, 246, 0.5)',
+              borderRadius: '12px',
+              background: 'transparent',
+              color: '#60a5fa',
+              cursor: 'pointer',
+              marginBottom: '1rem'
+            }}
+          >
+            📁 Click to Select Image
+          </button>
+          <input 
+            ref={fileRef}
+            type="file" 
+            accept="image/*" 
+            onChange={handleImageSelect}
+            style={{ display: 'none' }}
+          />
+
+          {imageBase64 && (
+            <div style={{ marginBottom: '1rem' }}>
+              <img 
+                src={imageBase64} 
+                alt="Selected" 
+                style={{
+                  width: '100%',
+                  borderRadius: '12px',
+                  marginBottom: '1rem',
+                  maxHeight: '300px',
+                  objectFit: 'cover'
+                }}
+              />
+              <p style={{ fontSize: '12px', color: '#9ca3af' }}>✓ Image selected</p>
+            </div>
+          )}
+
+          <h2 style={{ fontSize: '20px', marginBottom: '1rem', marginTop: '2rem' }}>2. Test Detection</h2>
+          <button 
+            onClick={testDetection}
+            disabled={!imageBase64 || loading}
+            style={{
+              width: '100%',
+              padding: '1rem',
+              background: loading ? 'rgba(59, 130, 246, 0.5)' : 'linear-gradient(135deg, #3b82f6, #2563eb)',
+              border: 'none',
+              borderRadius: '12px',
+              color: '#fff',
+              fontWeight: 600,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              opacity: !imageBase64 ? 0.5 : 1
+            }}
+          >
+            {loading ? '⏳ Testing...' : '🚀 Test Equipment Detection'}
+          </button>
+
+          {error && (
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              borderRadius: '12px',
+              padding: '1rem',
+              marginTop: '1rem',
+              color: '#fca5a5'
+            }}>
+              <p style={{ margin: 0, fontSize: '14px' }}>❌ {error}</p>
+            </div>
+          )}
+
+          {result && (
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.15)',
+              border: '1px solid rgba(16, 185, 129, 0.3)',
+              borderRadius: '12px',
+              padding: '1rem',
+              marginTop: '1rem',
+              color: '#6ee7b7'
+            }}>
+              <h3 style={{ marginTop: 0, color: '#10b981' }}>✓ Results:</h3>
+              <p style={{ fontSize: '12px', marginBottom: '1rem' }}>
+                <strong>Equipment Detected:</strong>
+              </p>
+              <div style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '0.5rem',
+                marginBottom: '1rem'
+              }}>
+                {result.equipment && result.equipment.map((item, i) => (
+                  <span key={i} style={{
+                    background: 'rgba(16, 185, 129, 0.2)',
+                    padding: '0.4rem 0.8rem',
+                    borderRadius: '20px',
+                    fontSize: '13px'
+                  }}>
+                    {item}
+                  </span>
+                ))}
+              </div>
+              {result.error && (
+                <p style={{ fontSize: '12px', color: '#fbbf24', margin: 0 }}>
+                  ⚠️ Note: {result.error}
+                </p>
+              )}
+              <pre style={{
+                background: 'rgba(0, 0, 0, 0.3)',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                fontSize: '11px',
+                overflow: 'auto',
+                marginTop: '1rem'
+              }}>
+                {JSON.stringify(result, null, 2)}
+              </pre>
+            </div>
+          )}
         </div>
 
-        <div style={{ background: 'rgba(20, 27, 48, 0.8)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '24px', padding: '2rem' }}>
-          {error && <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '12px', padding: '1rem', marginBottom: '1rem', color: '#fca5a5' }}>⚠️ {error}</div>}
-
-          {step === 'capture' && !captureMode && (
-            <div style={{ textAlign: 'center' }}>
-              <h2 style={{ fontSize: '24px', marginBottom: '2rem' }}>Let's Build Your Workout</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem' }}>
-                <button onClick={startCamera} style={{ padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', color: '#fff' }}>
-                  <div style={{ fontSize: 40, marginBottom: '1rem' }}>📱</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Take Photo</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af' }}>AI detects equipment</div>
-                </button>
-                <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', color: '#fff' }}>
-                  <div style={{ fontSize: 40, marginBottom: '1rem' }}>📁</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Upload Photo</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af' }}>AI analyzes image</div>
-                  <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
-                </label>
-              </div>
-              <button onClick={() => { setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']); setStep('equipment'); }} style={{ width: '100%', padding: '1rem', ...buttonStyle }}>Skip & Enter Equipment Manually</button>
-            </div>
-          )}
-
-          {captureMode === 'camera' && (
-            <div style={{ textAlign: 'center' }}>
-              <h2 style={{ fontSize: '20px', marginBottom: '1rem' }}>Point camera at your gym setup</h2>
-              <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', maxWidth: '100%', borderRadius: '16px', marginBottom: '1.5rem', backgroundColor: '#000', aspectRatio: '1' }} />
-              <canvas ref={canvasRef} width={500} height={500} style={{ display: 'none' }} />
-              <div style={{ display: 'flex', gap: '1rem' }}>
-                <button onClick={capturePhoto} style={{ flex: 1, padding: '0.875rem', ...primaryButtonStyle }}>📸 Capture</button>
-                <button onClick={() => { if (videoRef.current?.srcObject) { videoRef.current.srcObject.getTracks().forEach(track => track.stop()); } setCaptureMode(null); }} style={{ flex: 1, padding: '0.875rem', ...buttonStyle }}>Cancel</button>
-              </div>
-            </div>
-          )}
-
-          {step === 'equipment' && (
-            <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Your Equipment</h2>
-              {detectionLoading && <p style={{ color: '#60a5fa', marginBottom: '1rem' }}>🔍 Analyzing image with AI...</p>}
-              {uploadedImage && !detectionLoading && <img src={uploadedImage} alt="Gym" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem' }} />}
-              <div style={{ marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: '14px', marginBottom: '1rem' }}>Detected equipment:</p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
-                  {selectedEquipment.length > 0 ? selectedEquipment.map((e, i) => (
-                    <span key={i} onClick={() => removeEquipment(e)} style={{ background: 'rgba(59, 130, 246, 0.2)', padding: '0.4rem 0.8rem', borderRadius: '20px', cursor: 'pointer', fontSize: '14px' }}>
-                      {e} ✕
-                    </span>
-                  )) : <p style={{ color: '#9ca3af' }}>None detected</p>}
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                  <input type="text" placeholder="Add more equipment" value={manualEquipment} onChange={(e) => setManualEquipment(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addEquipment()} style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff' }} />
-                  <button onClick={addEquipment} style={buttonStyle}>Add</button>
-                </div>
-              </div>
-              <button onClick={() => setStep('goal')} disabled={selectedEquipment.length === 0} style={{ width: '100%', padding: '0.875rem', ...primaryButtonStyle, opacity: selectedEquipment.length === 0 ? 0.5 : 1 }}>Next: Goal</button>
-            </div>
-          )}
-
-          {step === 'goal' && (
-            <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>What's Your Goal?</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '1rem' }}>
-                {['Muscle Gain', 'Fat Loss', 'Endurance', 'General Fitness'].map(g => (
-                  <button key={g} onClick={() => { setGoal(g); setStep('difficulty'); }} style={{ ...cardStyle, border: goal === g ? '2px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.15)', background: goal === g ? 'rgba(59, 130, 246, 0.2)' : cardStyle.background, textAlign: 'center', padding: '1.5rem' }}>{g}</button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {step === 'difficulty' && (
-            <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Difficulty Level</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
-                {['beginner', 'intermediate', 'advanced'].map(d => (
-                  <button key={d} onClick={() => { setDifficulty(d); setStep('time'); }} style={{ ...cardStyle, border: difficulty === d ? '2px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.15)', background: difficulty === d ? 'rgba(59, 130, 246, 0.2)' : cardStyle.background, textAlign: 'center', padding: '1.5rem', textTransform: 'capitalize' }}>{d}</button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {step === 'time' && (
-            <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Duration: {timeLimit} minutes</h2>
-              <input type="range" min="10" max="120" step="5" value={timeLimit} onChange={(e) => setTimeLimit(parseInt(e.target.value))} style={{ width: '100%', marginBottom: '1.5rem' }} />
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
-                {[15, 30, 45, 60].map(t => (
-                  <button key={t} onClick={() => setTimeLimit(t)} style={{ ...cardStyle, border: timeLimit === t ? '2px solid #3b82f6' : '1px solid rgba(59, 130, 246, 0.15)', background: timeLimit === t ? 'rgba(59, 130, 246, 0.2)' : cardStyle.background, textAlign: 'center', padding: '1rem' }}>{t}m</button>
-                ))}
-              </div>
-              <button onClick={() => setStep('limits')} style={{ width: '100%', padding: '0.875rem', ...primaryButtonStyle }}>Next</button>
-            </div>
-          )}
-
-          {step === 'limits' && (
-            <div>
-              <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Any Injuries or Limitations?</h2>
-              <textarea placeholder="e.g., weak back, no jumping, shoulder pain..." value={limitations} onChange={(e) => setLimitations(e.target.value)} style={{ width: '100%', padding: '0.875rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff', minHeight: '100px', marginBottom: '1.5rem', fontFamily: 'inherit', resize: 'vertical' }} />
-              <button onClick={generateWorkout} disabled={loading} style={{ width: '100%', padding: '0.875rem', ...primaryButtonStyle, opacity: loading ? 0.7 : 1 }}>{loading ? '⚡ Generating...' : '🚀 Generate Workout'}</button>
-            </div>
-          )}
-
-          {step === 'results' && generatedWorkout && (
-            <div>
-              <h2 style={{ fontSize: '20px', marginBottom: '1.5rem', fontStyle: 'italic', color: '#60a5fa' }}>"{generatedWorkout.gymSummary}"</h2>
-
-              <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>💪 Warm-Up (2-3 min)</h3>
-              <p style={{ marginBottom: '2rem', color: '#d1d5db', fontSize: '14px' }}>{generatedWorkout.warmup}</p>
-
-              <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>🔥 Main Workout</h3>
-              {generatedWorkout.mainCircuit && generatedWorkout.mainCircuit.map((ex, idx) => (
-                <div key={idx} style={{ ...cardStyle, marginBottom: '1rem' }}>
-                  <p style={{ fontSize: '15px', fontWeight: '600', margin: '0 0 0.5rem', color: '#60a5fa' }}>{ex.exercise}</p>
-                  <p style={{ fontSize: '12px', color: '#9ca3af', margin: '0 0 0.25rem' }}>{ex.description}</p>
-                  <p style={{ fontSize: '12px', color: '#6b7280', margin: 0 }}>{ex.duration}</p>
-                </div>
-              ))}
-
-              <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>❄️ Cool Down (60 sec)</h3>
-              <p style={{ marginBottom: '2rem', color: '#d1d5db', fontSize: '14px' }}>{generatedWorkout.cooldown}</p>
-
-              {generatedWorkout.tips && (
-                <>
-                  <h3 style={{ fontSize: '16px', marginBottom: '1rem', fontWeight: 600 }}>⚠️ Safety Tips</h3>
-                  {generatedWorkout.tips.map((tip, idx) => (
-                    <div key={idx} style={{ background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '8px', padding: '0.75rem', marginBottom: '0.5rem' }}>
-                      <p style={{ fontSize: '13px', color: '#fcd34d', margin: 0 }}>✓ {tip}</p>
-                    </div>
-                  ))}
-                </>
-              )}
-
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
-                <button onClick={shareWorkout} style={{ flex: 1, ...primaryButtonStyle }}>📤 Share</button>
-                <button onClick={startOver} style={{ flex: 1, ...primaryButtonStyle }}>New Workout</button>
-              </div>
-            </div>
-          )}
+        <div style={{
+          background: 'rgba(59, 130, 246, 0.1)',
+          border: '1px solid rgba(59, 130, 246, 0.3)',
+          borderRadius: '12px',
+          padding: '1rem'
+        }}>
+          <h3 style={{ marginTop: 0 }}>ℹ️ Troubleshooting</h3>
+          <ul style={{ fontSize: '13px', lineHeight: '1.8', color: '#d1d5db' }}>
+            <li>✓ API should respond within 5 seconds</li>
+            <li>✓ Equipment list should appear as tags</li>
+            <li>✓ Check browser console for errors (F12)</li>
+            <li>✓ Make sure CLAUDE_API_KEY is set in Vercel</li>
+          </ul>
         </div>
       </div>
     </div>
