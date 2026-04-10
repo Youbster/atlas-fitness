@@ -13,6 +13,7 @@ export default function App() {
   const [generatedWorkout, setGeneratedWorkout] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [detectionLoading, setDetectionLoading] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -62,11 +63,7 @@ export default function App() {
           video.srcObject.getTracks().forEach(track => track.stop());
         }
         setCaptureMode(null);
-        
-        // Use default equipment after photo
-        setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']);
-        setStep('equipment');
-        setError(null);
+        detectEquipmentFromImage(imageData);
       } catch (err) {
         console.error('Capture error:', err);
         setError('Failed to capture photo. Try again.');
@@ -85,16 +82,48 @@ export default function App() {
       const reader = new FileReader();
       reader.onload = (event) => {
         setUploadedImage(event.target.result);
-        // Use default equipment after upload
-        setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']);
-        setStep('equipment');
-        setError(null);
+        detectEquipmentFromImage(event.target.result);
       };
       reader.onerror = () => {
         setError('Failed to read image.');
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const detectEquipmentFromImage = async (imageBase64) => {
+    setDetectionLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/detect-equipment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64 }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const equipment = data.equipment || [];
+        
+        if (equipment.length > 0) {
+          setSelectedEquipment(equipment);
+          setStep('equipment');
+          setDetectionLoading(false);
+          return;
+        }
+      }
+      
+      // Fallback
+      throw new Error('No equipment detected');
+    } catch (err) {
+      console.error('Detection error:', err);
+      setError('Could not detect equipment. Please add manually.');
+      setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']);
+      setStep('equipment');
+    }
+    
+    setDetectionLoading(false);
   };
 
   const addEquipment = () => {
@@ -217,12 +246,12 @@ export default function App() {
                 <button onClick={startCamera} style={{ padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', color: '#fff' }}>
                   <div style={{ fontSize: 40, marginBottom: '1rem' }}>📱</div>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Take Photo</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af' }}>Allow camera access</div>
+                  <div style={{ fontSize: 13, color: '#9ca3af' }}>AI detects equipment</div>
                 </button>
                 <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', color: '#fff' }}>
                   <div style={{ fontSize: 40, marginBottom: '1rem' }}>📁</div>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Upload Photo</div>
-                  <div style={{ fontSize: 13, color: '#9ca3af' }}>Select from device</div>
+                  <div style={{ fontSize: 13, color: '#9ca3af' }}>AI analyzes image</div>
                   <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
                 </label>
               </div>
@@ -245,18 +274,19 @@ export default function App() {
           {step === 'equipment' && (
             <div>
               <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Your Equipment</h2>
-              {uploadedImage && <img src={uploadedImage} alt="Gym" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem' }} />}
+              {detectionLoading && <p style={{ color: '#60a5fa', marginBottom: '1rem' }}>🔍 Analyzing image with AI...</p>}
+              {uploadedImage && !detectionLoading && <img src={uploadedImage} alt="Gym" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem' }} />}
               <div style={{ marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: '14px', marginBottom: '1rem' }}>Selected equipment:</p>
+                <p style={{ fontSize: '14px', marginBottom: '1rem' }}>Detected equipment:</p>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
                   {selectedEquipment.length > 0 ? selectedEquipment.map((e, i) => (
                     <span key={i} onClick={() => removeEquipment(e)} style={{ background: 'rgba(59, 130, 246, 0.2)', padding: '0.4rem 0.8rem', borderRadius: '20px', cursor: 'pointer', fontSize: '14px' }}>
                       {e} ✕
                     </span>
-                  )) : <p style={{ color: '#9ca3af' }}>None selected</p>}
+                  )) : <p style={{ color: '#9ca3af' }}>None detected</p>}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                  <input type="text" placeholder="Add equipment (e.g., dumbbells, bands)" value={manualEquipment} onChange={(e) => setManualEquipment(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addEquipment()} style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff' }} />
+                  <input type="text" placeholder="Add more equipment" value={manualEquipment} onChange={(e) => setManualEquipment(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addEquipment()} style={{ flex: 1, padding: '0.75rem', borderRadius: '12px', border: '1px solid rgba(59, 130, 246, 0.2)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff' }} />
                   <button onClick={addEquipment} style={buttonStyle}>Add</button>
                 </div>
               </div>

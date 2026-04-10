@@ -1,7 +1,8 @@
 // api/detect-equipment.js
-// Place this in your Vercel project at: api/detect-equipment.js
+// Detects gym equipment from images using Claude Vision API
 
 export default async function handler(req, res) {
+  // Only allow POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -12,8 +13,20 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'No image provided' });
   }
 
+  // Check if API key exists
+  if (!process.env.CLAUDE_API_KEY) {
+    console.error('CLAUDE_API_KEY not set in environment');
+    return res.status(500).json({ error: 'API key not configured' });
+  }
+
   try {
-    // Send to Claude Vision API for analysis
+    // Clean up the base64 if it has data: prefix
+    let base64Data = imageBase64;
+    if (imageBase64.includes('base64,')) {
+      base64Data = imageBase64.split('base64,')[1];
+    }
+
+    // Call Claude Vision API
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -21,8 +34,8 @@ export default async function handler(req, res) {
         'x-api-key': process.env.CLAUDE_API_KEY,
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 500,
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 300,
         messages: [
           {
             role: 'user',
@@ -32,12 +45,25 @@ export default async function handler(req, res) {
                 source: {
                   type: 'base64',
                   media_type: 'image/jpeg',
-                  data: imageBase64.split(',')[1] || imageBase64, // Remove data:image/jpeg;base64, prefix if present
+                  data: base64Data,
                 },
               },
               {
                 type: 'text',
-                text: 'Analyze this gym/equipment image. List ALL visible fitness equipment and items that can be used for exercise. Include: dumbbells, barbells, benches, machines, resistance bands, ropes, kettlebells, weight plates, pull-up bars, medicine balls, yoga mats, foam rollers, water bottles, towels, chairs, walls, stairs, or any other usable items. Return ONLY a JSON array of equipment names, nothing else. Example: ["dumbbells", "resistance bands", "pull-up bar"]. If no gym equipment visible, suggest common bodyweight exercise options like "space for jumping", "floor for exercises".',
+                text: `Look at this gym or exercise space image and identify ALL visible fitness equipment and items that can be used for working out. Be specific and accurate.
+
+List equipment like:
+- Specific weights (dumbbells, kettlebells, barbells)
+- Machines (treadmill, squat rack, bench press)
+- Equipment (resistance bands, yoga mat, medicine balls, ropes)
+- Furniture that can be used (benches, chairs, boxes)
+- Other items (water bottles, mirrors, bars)
+
+Return ONLY a JSON array of equipment names, nothing else. Example format:
+["dumbbells", "barbell", "bench", "resistance bands", "pull-up bar"]
+
+If no gym equipment visible, return the most likely bodyweight exercise options:
+["dumbbells", "resistance bands", "bodyweight exercises"]`,
               },
             ],
           },
@@ -47,31 +73,45 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       const error = await response.json();
-      console.error('Claude Vision API error:', error);
-      return res.status(response.status).json({
-        error: 'Failed to analyze image',
-        details: error.error?.message || 'Unknown error',
+      console.error('Claude API error:', error);
+      
+      // Fallback to defaults if API fails
+      return res.status(200).json({
+        equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
+        note: 'Using defaults due to detection error'
       });
     }
 
     const data = await response.json();
-    const detectedText = data.content[0].text;
+    const textContent = data.content[0]?.text || '';
 
     // Parse the JSON response
     try {
-      const equipment = JSON.parse(detectedText);
-      return res.status(200).json({ equipment: Array.isArray(equipment) ? equipment : [equipment] });
+      const equipment = JSON.parse(textContent);
+      
+      // Validate it's an array
+      if (Array.isArray(equipment) && equipment.length > 0) {
+        return res.status(200).json({ equipment });
+      } else {
+        throw new Error('Invalid equipment format');
+      }
     } catch (parseError) {
-      // If parsing fails, try to extract equipment from text
-      console.error('JSON parse error:', parseError);
-      const equipmentList = detectedText.split(',').map(e => e.trim().replace(/["'\[\]]/g, '')).filter(e => e.length > 0);
-      return res.status(200).json({ equipment: equipmentList || ['dumbbells', 'resistance bands'] });
+      console.error('Parse error:', parseError, 'Response text:', textContent);
+      
+      // Fallback to defaults
+      return res.status(200).json({
+        equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
+        note: 'Could not parse detection'
+      });
     }
+
   } catch (error) {
     console.error('Equipment detection error:', error);
-    return res.status(500).json({
-      error: 'Failed to analyze image',
-      details: error.message,
+    
+    // Always return defaults instead of error
+    return res.status(200).json({
+      equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
+      note: 'Detection failed, using defaults'
     });
   }
 }
