@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 const EXERCISE_DATABASE = {
   'Push-ups': {
@@ -58,8 +58,19 @@ export default function AtlasFitnessApp() {
   const [generatedWorkout, setGeneratedWorkout] = useState(null);
   const [selectedExercise, setSelectedExercise] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [detectionLoading, setDetectionLoading] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+
+  // Register service worker for PWA
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/service-worker.js').catch(err => {
+        console.log('Service worker registration failed:', err);
+      });
+    }
+  }, []);
 
   const startCamera = async () => {
     try {
@@ -68,9 +79,9 @@ export default function AtlasFitnessApp() {
         videoRef.current.srcObject = stream;
       }
       setCaptureMode('camera');
+      setError(null);
     } catch (err) {
-      console.error('Camera access denied:', err);
-      alert('Camera access required. Please try file upload instead.');
+      setError('Camera access denied. Please try file upload instead.');
     }
   };
 
@@ -86,27 +97,47 @@ export default function AtlasFitnessApp() {
         video.srcObject.getTracks().forEach(track => track.stop());
       }
       setCaptureMode(null);
-      setSelectedEquipment(detectEquipmentFromImage());
-      setStep('equipment');
+      detectEquipmentFromImage(imageData);
     }
   };
 
-  const handleImageUpload = (e) => {
+  const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = (event) => {
         setUploadedImage(event.target.result);
-        setSelectedEquipment(detectEquipmentFromImage());
-        setStep('equipment');
+        detectEquipmentFromImage(event.target.result);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const detectEquipmentFromImage = () => {
-    const possibleEquipment = ['Dumbbells', 'Kettlebell', 'Resistance Bands', 'Pull-up Bar', 'Bench'];
-    return possibleEquipment.slice(0, Math.floor(Math.random() * 3) + 2);
+  const detectEquipmentFromImage = async (imageBase64) => {
+    setDetectionLoading(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/detect-equipment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64 }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.details || 'Failed to detect equipment');
+      }
+
+      const data = await response.json();
+      setSelectedEquipment(data.equipment || []);
+      setStep('equipment');
+    } catch (err) {
+      setError(`Detection failed: ${err.message}. You can still add equipment manually.`);
+      setSelectedEquipment(['dumbbells', 'bodyweight exercises']);
+      setStep('equipment');
+    } finally {
+      setDetectionLoading(false);
+    }
   };
 
   const handleEquipmentSelection = (item) => {
@@ -124,53 +155,58 @@ export default function AtlasFitnessApp() {
 
   const generateWorkout = async () => {
     setLoading(true);
+    setError(null);
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('/api/generate-workout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1200,
-          messages: [{
-            role: 'user',
-            content: `Generate a ${difficulty} difficulty workout using ONLY: ${selectedEquipment.join(', ')}. Goal: ${goal}. Time: ${timeLimit}min. Limitations: ${limitations || 'None'}.
-
-Return ONLY valid JSON (no markdown):
-{
-  "gymSummary": "Witty one-liner",
-  "warmup": "2-3 minute warm-up",
-  "mainCircuit": [
-    {"exercise": "Name", "description": "What it targets", "duration": "time or reps"}
-  ],
-  "cooldown": "30-60 second cooldown",
-  "tips": ["Safety tip 1", "Safety tip 2"],
-  "macgyverMove": {"name": "Exercise", "description": "How to do it"}
-}`
-          }]
-        })
+          equipment: selectedEquipment,
+          goal,
+          difficulty,
+          timeLimit,
+          limitations,
+        }),
       });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.details || 'Failed to generate workout');
+      }
 
       const data = await response.json();
-      const parsed = JSON.parse(data.content[0].text);
-      setGeneratedWorkout(parsed);
+      setGeneratedWorkout(data);
       setStep('results');
-    } catch (error) {
-      console.error('Error:', error);
-      setGeneratedWorkout({
-        gymSummary: "Perfect setup—let's crush it!",
-        warmup: "3 minutes: 30 jumping jacks, arm circles, bodyweight squats.",
-        mainCircuit: [
-          { exercise: 'Push-ups', description: 'Upper body', duration: '3 sets' },
-          { exercise: 'Squats', description: 'Lower body', duration: '3 sets' },
-          { exercise: 'Planks', description: 'Core', duration: '3 sets' }
-        ],
-        cooldown: "Walk around, stretch for 60 seconds.",
-        tips: ["Keep core tight", "Full range of motion", "Control the movement"],
-        macgyverMove: { name: 'Towel Slides', description: 'Use towels on smooth floor for glute activation.' }
-      });
-      setStep('results');
+    } catch (err) {
+      setError(`Workout generation failed: ${err.message}. Please try again.`);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  const shareWorkout = async () => {
+    const shareText = `Check out my ${difficulty} ${goal} workout! Generated by Atlas Fitness Coach. ${generatedWorkout?.gymSummary}`;
+    const shareUrl = window.location.href;
+
+    try {
+      if (navigator.share) {
+        // Native share (mobile)
+        await navigator.share({
+          title: 'Atlas Fitness Workout',
+          text: shareText,
+          url: shareUrl,
+        });
+      } else {
+        // Fallback: copy to clipboard
+        const fullText = `${shareText}\n\n${shareUrl}`;
+        navigator.clipboard.writeText(fullText);
+        alert('Workout details copied to clipboard!');
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setError('Failed to share workout');
+      }
+    }
   };
 
   const startOver = () => {
@@ -184,388 +220,551 @@ Return ONLY valid JSON (no markdown):
     setLimitations('');
     setGeneratedWorkout(null);
     setSelectedExercise(null);
+    setError(null);
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, var(--color-background-tertiary) 0%, var(--color-background-secondary) 100%)', fontFamily: 'var(--font-sans)' }}>
+    <div style={{ minHeight: '100vh', background: '#0a0e27', fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+        
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        .atlas-container { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
-        .header { text-align: center; margin-bottom: 2rem; padding: 2rem 1rem; background: var(--color-background-primary); border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-        .header h1 { font-size: 36px; font-weight: 500; margin-bottom: 0.5rem; color: var(--color-text-primary); letter-spacing: -0.5px; }
-        .header p { font-size: 14px; color: var(--color-text-secondary); }
-        .content { padding: 2rem; background: var(--color-background-primary); border-radius: 16px; margin: 0 0 2rem; }
-        .button { padding: 0.75rem 1.5rem; border: 0.5px solid var(--color-border-secondary); background: transparent; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--color-text-primary); transition: all 0.2s; }
-        .button:hover:not(:disabled) { background: var(--color-background-secondary); }
-        .button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .button-primary { border: 2px solid var(--color-border-info); color: var(--color-text-info); background: var(--color-background-info); font-weight: 500; }
-        .button-primary:hover:not(:disabled) { opacity: 0.9; }
-        .card { background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; transition: all 0.2s; }
-        .card:hover { border-color: var(--color-border-secondary); }
-        .card.selected { border: 2px solid var(--color-border-info); background: var(--color-background-info); color: var(--color-text-info); }
-        .badge { display: inline-block; padding: 0.35rem 0.75rem; border-radius: 6px; font-size: 12px; font-weight: 500; margin-right: 8px; margin-bottom: 8px; }
-        .badge-beginner { background: var(--color-background-success); color: var(--color-text-success); }
-        .badge-intermediate { background: var(--color-background-info); color: var(--color-text-info); }
-        .badge-advanced { background: var(--color-background-warning); color: var(--color-text-warning); }
-        .exercise-card { background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; cursor: pointer; transition: all 0.2s; text-align: left; width: 100%; font-family: var(--font-sans); }
-        .exercise-card:hover { border-color: var(--color-border-secondary); }
-        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-        h2 { font-size: 20px; font-weight: 500; margin-bottom: 1.5rem; color: var(--color-text-primary); }
-        h3 { font-size: 16px; font-weight: 500; margin-bottom: 1rem; color: var(--color-text-primary); }
-        p { line-height: 1.6; }
+        body { background: #0a0e27; color: #fff; }
+        
+        .atlas-wrapper { 
+          min-height: 100vh;
+          background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+          position: relative;
+          overflow: hidden;
+        }
+        
+        .atlas-wrapper::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 400px;
+          background: radial-gradient(circle at top right, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
+          pointer-events: none;
+        }
+        
+        .atlas-container { 
+          max-width: 900px; 
+          margin: 0 auto; 
+          padding: 2rem 1.5rem;
+          position: relative;
+          z-index: 1;
+        }
+        
+        .header { 
+          text-align: center; 
+          margin-bottom: 2.5rem; 
+          animation: slideDown 0.6s ease-out;
+        }
+        
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateY(-20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .header h1 { 
+          font-family: 'Plus Jakarta Sans', sans-serif;
+          font-size: 48px; 
+          font-weight: 800;
+          margin-bottom: 0.5rem;
+          background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          letter-spacing: -1px;
+        }
+        
+        .header p { 
+          font-size: 16px; 
+          color: #9ca3af;
+          font-weight: 400;
+        }
+        
+        .content { 
+          background: rgba(20, 27, 48, 0.8);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(59, 130, 246, 0.2);
+          border-radius: 24px; 
+          padding: 2.5rem;
+          margin-bottom: 2rem;
+          animation: fadeIn 0.6s ease-out 0.1s both;
+        }
+        
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        
+        .error-box {
+          background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(220, 38, 38, 0.1));
+          border: 1px solid rgba(239, 68, 68, 0.3);
+          border-radius: 12px;
+          padding: 1rem;
+          margin-bottom: 1.5rem;
+          color: #fca5a5;
+        }
+        
+        .success-box {
+          background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(5, 150, 105, 0.1));
+          border: 1px solid rgba(16, 185, 129, 0.3);
+          border-radius: 12px;
+          padding: 1rem;
+          margin-bottom: 1.5rem;
+          color: #6ee7b7;
+        }
+        
+        .button { 
+          padding: 0.875rem 1.75rem; 
+          border: 1px solid rgba(59, 130, 246, 0.3);
+          background: transparent; 
+          border-radius: 12px; 
+          cursor: pointer; 
+          font-size: 14px; 
+          font-weight: 500; 
+          color: #fff;
+          transition: all 0.3s ease;
+          font-family: 'Inter', sans-serif;
+        }
+        
+        .button:hover:not(:disabled) { 
+          background: rgba(59, 130, 246, 0.1);
+          border-color: rgba(59, 130, 246, 0.5);
+          transform: translateY(-2px);
+        }
+        
+        .button:disabled { 
+          opacity: 0.4; 
+          cursor: not-allowed; 
+        }
+        
+        .button-primary { 
+          border: 2px solid #3b82f6;
+          background: linear-gradient(135deg, #3b82f6, #2563eb);
+          color: #fff;
+          font-weight: 600;
+        }
+        
+        .button-primary:hover:not(:disabled) { 
+          background: linear-gradient(135deg, #2563eb, #1d4ed8);
+          box-shadow: 0 8px 24px rgba(59, 130, 246, 0.3);
+          border-color: #1d4ed8;
+        }
+        
+        .button-secondary {
+          border: 1px solid rgba(16, 185, 129, 0.3);
+          background: rgba(16, 185, 129, 0.1);
+          color: #6ee7b7;
+        }
+        
+        .button-secondary:hover:not(:disabled) {
+          background: rgba(16, 185, 129, 0.2);
+          border-color: rgba(16, 185, 129, 0.5);
+        }
+        
+        .card { 
+          background: rgba(30, 41, 59, 0.6);
+          border: 1px solid rgba(59, 130, 246, 0.15);
+          border-radius: 16px; 
+          padding: 1.5rem; 
+          margin-bottom: 1rem;
+          cursor: pointer;
+          transition: all 0.3s ease;
+        }
+        
+        .card:hover { 
+          border-color: rgba(59, 130, 246, 0.4);
+          transform: translateY(-4px);
+          background: rgba(30, 41, 59, 0.9);
+        }
+        
+        .card.selected { 
+          border: 2px solid #3b82f6;
+          background: linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(139, 92, 246, 0.1));
+          color: #fff;
+        }
+        
+        .badge { 
+          display: inline-block; 
+          padding: 0.4rem 1rem; 
+          border-radius: 20px; 
+          font-size: 12px; 
+          font-weight: 600;
+          margin-right: 8px; 
+          margin-bottom: 8px;
+          transition: all 0.2s ease;
+        }
+        
+        .badge-success { 
+          background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.1));
+          color: #10b981;
+          border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        
+        .badge-info { 
+          background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.1));
+          color: #60a5fa;
+          border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+        
+        .badge-warning { 
+          background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.1));
+          color: #fbbf24;
+          border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        
+        .exercise-card { 
+          background: rgba(30, 41, 59, 0.6);
+          border: 1px solid rgba(59, 130, 246, 0.15);
+          border-radius: 16px; 
+          padding: 1.5rem; 
+          margin-bottom: 1rem; 
+          cursor: pointer; 
+          transition: all 0.3s ease;
+          text-align: left;
+          width: 100%;
+          font-family: 'Inter', sans-serif;
+        }
+        
+        .exercise-card:hover { 
+          border-color: rgba(59, 130, 246, 0.4);
+          transform: translateY(-4px);
+          background: rgba(30, 41, 59, 0.9);
+          box-shadow: 0 12px 32px rgba(59, 130, 246, 0.15);
+        }
+        
+        .grid-2 { 
+          display: grid; 
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); 
+          gap: 1rem;
+        }
+        
+        h2 { 
+          font-size: 24px; 
+          font-weight: 700;
+          margin-bottom: 1.5rem;
+          color: #fff;
+        }
+        
+        h3 { 
+          font-size: 18px; 
+          font-weight: 600;
+          margin-bottom: 1rem; 
+          color: #fff;
+        }
+        
+        p { 
+          line-height: 1.6;
+          color: #d1d5db;
+        }
+        
+        input, textarea {
+          background: rgba(15, 23, 42, 0.6);
+          border: 1px solid rgba(59, 130, 246, 0.2);
+          color: #fff;
+          border-radius: 12px;
+          padding: 0.75rem;
+          font-family: 'Inter', sans-serif;
+          transition: all 0.2s ease;
+        }
+        
+        input:focus, textarea:focus {
+          outline: none;
+          border-color: rgba(59, 130, 246, 0.6);
+          background: rgba(15, 23, 42, 0.9);
+          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+        
+        input::placeholder, textarea::placeholder {
+          color: #6b7280;
+        }
+        
+        .stat-box {
+          background: rgba(59, 130, 246, 0.1);
+          border: 1px solid rgba(59, 130, 246, 0.2);
+          border-radius: 16px;
+          padding: 1.5rem;
+          text-align: center;
+          margin-bottom: 1rem;
+        }
+        
+        .stat-label {
+          font-size: 12px;
+          color: #9ca3af;
+          margin-bottom: 0.5rem;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+        
+        .stat-value {
+          font-size: 28px;
+          font-weight: 700;
+          background: linear-gradient(135deg, #60a5fa, #a78bfa);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+        
+        .loading {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          background: #3b82f6;
+          border-radius: 50%;
+          animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+        
+        .button-group {
+          display: flex;
+          gap: 1rem;
+          margin-top: 1rem;
+          flex-wrap: wrap;
+        }
+        
+        .button-group .button {
+          flex: 1;
+          min-width: 150px;
+        }
       `}
       </style>
 
-      <div className="atlas-container">
-        <div className="header">
-          <h1>Atlas</h1>
-          <p>Professional workouts with what you have</p>
-        </div>
+      <div className="atlas-wrapper">
+        <div className="atlas-container">
+          <div className="header">
+            <h1>ATLAS</h1>
+            <p>AI-powered fitness. Your equipment, your rules</p>
+          </div>
 
-        <div className="content">
-          {step === 'capture' && !captureMode && (
-            <div style={{ textAlign: 'center' }}>
-              <p style={{ fontSize: 16, color: 'var(--color-text-secondary)', marginBottom: '1.5rem' }}>
-                Let's build your perfect workout. Start by showing us your equipment.
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '1.5rem' }}>
-                <button onClick={startCamera} style={{ padding: '1.5rem', background: 'var(--color-background-secondary)', border: '2px solid var(--color-border-tertiary)', borderRadius: '12px', cursor: 'pointer', transition: 'all 0.2s' }} onMouseEnter={(e) => e.target.style.borderColor = 'var(--color-border-secondary)'} onMouseLeave={(e) => e.target.style.borderColor = 'var(--color-border-tertiary)'}>
-                  <div style={{ fontSize: 32, marginBottom: '0.5rem' }}>📱</div>
-                  <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--color-text-primary)' }}>Take Photo</div>
-                  <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>Use your camera</div>
-                </button>
-                <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '1.5rem', background: 'var(--color-background-secondary)', border: '2px solid var(--color-border-tertiary)', borderRadius: '12px', cursor: 'pointer', transition: 'all 0.2s' }} onMouseEnter={(e) => e.style.borderColor = 'var(--color-border-secondary)'} onMouseLeave={(e) => e.style.borderColor = 'var(--color-border-tertiary)'}>
-                  <div style={{ fontSize: 32, marginBottom: '0.5rem' }}>📁</div>
-                  <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--color-text-primary)' }}>Upload Photo</div>
-                  <div style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>From your device</div>
-                  <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
-                </label>
-              </div>
-              <button className="button" onClick={() => { setSelectedEquipment([]); setStep('equipment'); }} style={{ width: '100%' }}>
-                Skip & Enter Equipment Manually
-              </button>
-            </div>
-          )}
+          <div className="content">
+            {error && <div className="error-box">⚠️ {error}</div>}
 
-          {captureMode === 'camera' && (
-            <div style={{ textAlign: 'center' }}>
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                style={{ width: '100%', maxWidth: '500px', borderRadius: '12px', marginBottom: '1rem', backgroundColor: '#000' }}
-              />
-              <canvas ref={canvasRef} width={500} height={500} style={{ display: 'none' }} />
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button className="button button-primary" onClick={capturePhoto} style={{ flex: 1, padding: '0.75rem' }}>
-                  Capture Photo
-                </button>
-                <button className="button" onClick={() => {
-                  if (videoRef.current?.srcObject) {
-                    videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-                  }
-                  setCaptureMode(null);
-                }} style={{ flex: 1, padding: '0.75rem' }}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {step === 'equipment' && (
-            <div>
-              <h2>Step 1: Confirm Your Equipment</h2>
-              {uploadedImage && (
-                <img src={uploadedImage} alt="Gym setup" style={{
-                  width: '100%',
-                  maxWidth: '400px',
-                  borderRadius: '12px',
-                  marginBottom: '1.5rem',
-                  border: '0.5px solid var(--color-border-tertiary)'
-                }} />
-              )}
-              <div style={{ marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: 14, fontWeight: 500, marginBottom: '0.75rem', color: 'var(--color-text-primary)' }}>
-                  Detected Equipment:
+            {step === 'capture' && !captureMode && (
+              <div style={{ textAlign: 'center' }}>
+                <p style={{ fontSize: 16, color: '#d1d5db', marginBottom: '2rem' }}>
+                  Let's build your perfect workout
                 </p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                  {selectedEquipment.length > 0 ? (
-                    selectedEquipment.map(item => (
-                      <button
-                        key={item}
-                        onClick={() => handleEquipmentSelection(item)}
-                        className="badge badge-intermediate"
-                        style={{ border: 'none', cursor: 'pointer', padding: '0.6rem 1rem' }}
-                      >
-                        {item} ✓
-                      </button>
-                    ))
-                  ) : (
-                    <p style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
-                      No equipment detected. Add manually below.
-                    </p>
-                  )}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem' }}>
+                  <button onClick={startCamera} style={{ padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', transition: 'all 0.3s', color: '#fff' }} onMouseEnter={(e) => { e.target.style.borderColor = 'rgba(59, 130, 246, 0.5)'; e.target.style.background = 'rgba(30, 41, 59, 0.9)'; }} onMouseLeave={(e) => { e.target.style.borderColor = 'rgba(59, 130, 246, 0.2)'; e.target.style.background = 'rgba(30, 41, 59, 0.6)'; }}>
+                    <div style={{ fontSize: 40, marginBottom: '1rem' }}>📱</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Take Photo</div>
+                    <div style={{ fontSize: 13, color: '#9ca3af' }}>AI detects equipment</div>
+                  </button>
+                  <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem', background: 'rgba(30, 41, 59, 0.6)', border: '2px solid rgba(59, 130, 246, 0.2)', borderRadius: '16px', cursor: 'pointer', transition: 'all 0.3s', color: '#fff' }} onMouseEnter={(e) => { e.style.borderColor = 'rgba(59, 130, 246, 0.5)'; e.style.background = 'rgba(30, 41, 59, 0.9)'; }} onMouseLeave={(e) => { e.style.borderColor = 'rgba(59, 130, 246, 0.2)'; e.style.background = 'rgba(30, 41, 59, 0.6)'; }}>
+                    <div style={{ fontSize: 40, marginBottom: '1rem' }}>📁</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, marginBottom: '0.25rem' }}>Upload Photo</div>
+                    <div style={{ fontSize: 13, color: '#9ca3af' }}>AI analyzes image</div>
+                    <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
+                  </label>
+                </div>
+                <button className="button" onClick={() => { setSelectedEquipment([]); setStep('equipment'); }} style={{ width: '100%', padding: '1rem' }}>
+                  Skip &amp; Enter Equipment Manually
+                </button>
+              </div>
+            )}
+
+            {captureMode === 'camera' && (
+              <div style={{ textAlign: 'center' }}>
+                <video ref={videoRef} autoPlay playsInline style={{ width: '100%', maxWidth: '500px', borderRadius: '16px', marginBottom: '1.5rem', backgroundColor: '#000' }} />
+                <canvas ref={canvasRef} width={500} height={500} style={{ display: 'none' }} />
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <button className="button button-primary" onClick={capturePhoto} style={{ flex: 1, padding: '0.875rem' }}>
+                    Capture Photo
+                  </button>
+                  <button className="button" onClick={() => { if (videoRef.current?.srcObject) { videoRef.current.srcObject.getTracks().forEach(track => track.stop()); } setCaptureMode(null); }} style={{ flex: 1, padding: '0.875rem' }}>
+                    Cancel
+                  </button>
                 </div>
               </div>
-              <div style={{ marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: 14, fontWeight: 500, marginBottom: '0.75rem', color: 'var(--color-text-primary)' }}>
-                  Add More Equipment:
-                </p>
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
-                  <input
-                    type="text"
-                    placeholder="e.g., water bottles, rope, towel"
-                    value={manualEquipment}
-                    onChange={(e) => setManualEquipment(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && addManualEquipment()}
-                    style={{
-                      flex: 1,
-                      padding: '0.6rem',
-                      borderRadius: '8px',
-                      border: '0.5px solid var(--color-border-tertiary)',
-                      fontSize: 14,
-                      fontFamily: 'var(--font-sans)',
-                      color: 'var(--color-text-primary)',
-                      background: 'var(--color-background-secondary)'
-                    }}
-                  />
-                  <button className="button" onClick={addManualEquipment}>Add</button>
+            )}
+
+            {step === 'equipment' && (
+              <div>
+                <h2>Confirm Your Equipment</h2>
+                {detectionLoading && (
+                  <p style={{ color: '#60a5fa', marginBottom: '1rem' }}>
+                    Analyzing image with AI... <span className="loading" style={{ marginLeft: '0.5rem' }}></span>
+                  </p>
+                )}
+                {uploadedImage && !detectionLoading && <img src={uploadedImage} alt="Gym setup" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem', border: '1px solid rgba(59, 130, 246, 0.2)' }} />}
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <p style={{ fontSize: 14, fontWeight: 500, marginBottom: '1rem', color: '#e5e7eb' }}>Detected Equipment:</p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    {selectedEquipment.length > 0 ? selectedEquipment.map(item => <span key={item} className="badge badge-info" style={{ padding: '0.5rem 1rem' }}>{item}</span>) : <p style={{ fontSize: 13, color: '#6b7280' }}>No equipment detected. Add below.</p>}
+                  </div>
                 </div>
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <p style={{ fontSize: 14, fontWeight: 500, marginBottom: '1rem', color: '#e5e7eb' }}>Add Equipment:</p>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input type="text" placeholder="e.g., water bottles, rope, towel" value={manualEquipment} onChange={(e) => setManualEquipment(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addManualEquipment()} style={{ flex: 1 }} />
+                    <button className="button" onClick={addManualEquipment} style={{ padding: '0.75rem 1.5rem' }}>Add</button>
+                  </div>
+                </div>
+                <button className="button button-primary" onClick={() => setStep('goal')} disabled={selectedEquipment.length === 0} style={{ width: '100%', padding: '0.875rem' }}>
+                  Next: Select Your Goal
+                </button>
               </div>
-              <button
-                className="button button-primary"
-                onClick={() => setStep('goal')}
-                disabled={selectedEquipment.length === 0}
-                style={{ width: '100%', padding: '0.75rem' }}
-              >
-                Next: Select Your Goal
-              </button>
-            </div>
-          )}
+            )}
 
-          {step === 'goal' && (
-            <div>
-              <h2>Step 2: What's Your Goal?</h2>
-              <div className="grid-2">
-                {['Muscle Gain', 'Fat Loss', 'Endurance', 'Mobility', 'Strength', 'General Fitness'].map(g => (
-                  <button
-                    key={g}
-                    onClick={() => { setGoal(g); setStep('difficulty'); }}
-                    className={`card ${goal === g ? 'selected' : ''}`}
-                    style={{ cursor: 'pointer', textAlign: 'center', padding: '1.5rem' }}
-                  >
-                    <div style={{ fontSize: 16, fontWeight: 500 }}>{g}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {step === 'difficulty' && (
-            <div>
-              <h2>Step 3: Choose Your Difficulty</h2>
-              <div className="grid-2">
-                {['beginner', 'intermediate', 'advanced'].map(d => (
-                  <button
-                    key={d}
-                    onClick={() => { setDifficulty(d); setStep('time'); }}
-                    className={`card ${difficulty === d ? 'selected' : ''}`}
-                    style={{ cursor: 'pointer', textAlign: 'center', padding: '1.5rem' }}
-                  >
-                    <div style={{ fontSize: 16, fontWeight: 500, textTransform: 'capitalize' }}>{d}</div>
-                    <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginTop: '0.5rem' }}>
-                      {d === 'beginner' && 'Building foundation'}
-                      {d === 'intermediate' && 'Solid challenge'}
-                      {d === 'advanced' && 'Maximum intensity'}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {step === 'time' && (
-            <div>
-              <h2>Step 4: How Many Minutes?</h2>
-              <div style={{ marginBottom: '1.5rem' }}>
-                <input
-                  type="range"
-                  min="10"
-                  max="120"
-                  step="5"
-                  value={timeLimit}
-                  onChange={(e) => setTimeLimit(parseInt(e.target.value))}
-                  style={{ width: '100%', marginBottom: '1rem' }}
-                />
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '1rem' }}>
-                  {[15, 30, 45, 60].map(time => (
-                    <button
-                      key={time}
-                      onClick={() => setTimeLimit(time)}
-                      className={`card ${timeLimit === time ? 'selected' : ''}`}
-                      style={{ cursor: 'pointer', textAlign: 'center', padding: '1rem' }}
-                    >
-                      {time}m
+            {step === 'goal' && (
+              <div>
+                <h2>What's Your Goal?</h2>
+                <div className="grid-2">
+                  {['Muscle Gain', 'Fat Loss', 'Endurance', 'Mobility', 'Strength', 'General Fitness'].map(g => (
+                    <button key={g} onClick={() => { setGoal(g); setStep('difficulty'); }} className={`card ${goal === g ? 'selected' : ''}`} style={{ textAlign: 'center', padding: '1.5rem', fontSize: 15, fontWeight: 500 }}>
+                      {g}
                     </button>
                   ))}
                 </div>
               </div>
-              <button className="button button-primary" onClick={() => setStep('limits')} style={{ width: '100%', padding: '0.75rem' }}>
-                Next: Any Limitations?
-              </button>
-            </div>
-          )}
+            )}
 
-          {step === 'limits' && (
-            <div>
-              <h2>Step 5: Physical Limitations or Injuries?</h2>
-              <textarea
-                placeholder="e.g., Weak lower back, no jumping, shoulder impingement..."
-                value={limitations}
-                onChange={(e) => setLimitations(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  borderRadius: '8px',
-                  border: '0.5px solid var(--color-border-tertiary)',
-                  fontSize: 14,
-                  minHeight: '100px',
-                  fontFamily: 'var(--font-sans)',
-                  color: 'var(--color-text-primary)',
-                  background: 'var(--color-background-secondary)',
-                  marginBottom: '1rem'
-                }}
-              />
-              <button
-                className="button button-primary"
-                onClick={() => generateWorkout()}
-                disabled={loading}
-                style={{ width: '100%', padding: '0.75rem' }}
-              >
-                {loading ? 'Generating Your Workout...' : 'Generate My Workout'}
-              </button>
-            </div>
-          )}
-
-          {step === 'results' && generatedWorkout && !selectedExercise && (
-            <div>
-              <div style={{ background: 'var(--color-background-secondary)', padding: '1.5rem', borderRadius: '12px', marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: 18, fontWeight: 500, margin: 0, color: 'var(--color-text-primary)', fontStyle: 'italic' }}>
-                  "{generatedWorkout.gymSummary}"
-                </p>
-                <div style={{ marginTop: '1rem', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <span className="badge badge-intermediate">{goal}</span>
-                  <span className={`badge badge-${difficulty}`}>{difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}</span>
-                  <span className="badge badge-info">{timeLimit} min</span>
+            {step === 'difficulty' && (
+              <div>
+                <h2>Choose Your Difficulty</h2>
+                <div className="grid-2">
+                  {['beginner', 'intermediate', 'advanced'].map(d => (
+                    <button key={d} onClick={() => { setDifficulty(d); setStep('time'); }} className={`card ${difficulty === d ? 'selected' : ''}`} style={{ textAlign: 'center', padding: '1.5rem' }}>
+                      <div style={{ fontSize: 16, fontWeight: 600, textTransform: 'capitalize', marginBottom: '0.5rem' }}>{d}</div>
+                      <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                        {d === 'beginner' && 'Building foundation'}
+                        {d === 'intermediate' && 'Solid challenge'}
+                        {d === 'advanced' && 'Maximum intensity'}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </div>
+            )}
 
-              <h3>Warm-Up (2-3 Min)</h3>
-              <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: '1.5rem' }}>
-                {generatedWorkout.warmup}
-              </p>
-
-              <h3>Main Circuit</h3>
-              {generatedWorkout.mainCircuit.map((ex, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => setSelectedExercise(ex)}
-                  className="exercise-card"
-                >
-                  <p style={{ fontSize: 15, fontWeight: 500, margin: '0 0 0.5rem', color: 'var(--color-text-primary)' }}>
-                    {ex.exercise}
-                  </p>
-                  <p style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '0 0 0.25rem' }}>
-                    {ex.description}
-                  </p>
-                  <p style={{ fontSize: 12, color: 'var(--color-text-tertiary)', margin: 0 }}>
-                    {ex.duration}
-                  </p>
-                  <p style={{ fontSize: 12, color: 'var(--color-border-info)', margin: '0.5rem 0 0' }}>
-                    👉 Click to view demonstration
-                  </p>
+            {step === 'time' && (
+              <div>
+                <h2>How Many Minutes?</h2>
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <input type="range" min="10" max="120" step="5" value={timeLimit} onChange={(e) => setTimeLimit(parseInt(e.target.value))} style={{ width: '100%', marginBottom: '1.5rem' }} />
+                  <div className="grid-2" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+                    {[15, 30, 45, 60].map(time => (
+                      <button key={time} onClick={() => setTimeLimit(time)} className={`card ${timeLimit === time ? 'selected' : ''}`} style={{ textAlign: 'center', padding: '1rem' }}>
+                        {time}m
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button className="button button-primary" onClick={() => setStep('limits')} style={{ width: '100%', padding: '0.875rem' }}>
+                  Next: Any Limitations?
                 </button>
-              ))}
-
-              <h3 style={{ marginTop: '1.5rem' }}>The MacGyver Move</h3>
-              <div style={{ background: 'var(--color-background-info)', padding: '1rem', borderRadius: '12px', marginBottom: '1.5rem' }}>
-                <p style={{ fontSize: 14, fontWeight: 500, margin: '0 0 0.5rem', color: 'var(--color-text-info)' }}>
-                  {generatedWorkout.macgyverMove.name}
-                </p>
-                <p style={{ fontSize: 13, color: 'var(--color-text-info)', margin: 0 }}>
-                  {generatedWorkout.macgyverMove.description}
-                </p>
               </div>
+            )}
 
-              <h3>Safety Tips</h3>
-              {generatedWorkout.tips.map((tip, idx) => (
-                <div key={idx} style={{ background: 'var(--color-background-warning)', padding: '0.75rem', borderRadius: '8px', marginBottom: '0.5rem' }}>
-                  <p style={{ fontSize: 13, color: 'var(--color-text-warning)', margin: 0 }}>
-                    ✓ {tip}
+            {step === 'limits' && (
+              <div>
+                <h2>Physical Limitations or Injuries?</h2>
+                <textarea placeholder="e.g., Weak lower back, no jumping, shoulder impingement..." value={limitations} onChange={(e) => setLimitations(e.target.value)} style={{ width: '100%', padding: '0.875rem', minHeight: '100px', marginBottom: '1.5rem' }} />
+                <button className="button button-primary" onClick={() => generateWorkout()} disabled={loading} style={{ width: '100%', padding: '0.875rem' }}>
+                  {loading ? <>Generating <span className="loading" style={{ marginLeft: '0.5rem' }}></span></> : 'Generate My Workout'}
+                </button>
+              </div>
+            )}
+
+            {step === 'results' && generatedWorkout && !selectedExercise && (
+              <div>
+                <div style={{ background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(139, 92, 246, 0.1))', border: '1px solid rgba(59, 130, 246, 0.3)', borderRadius: '16px', padding: '2rem', marginBottom: '2rem', textAlign: 'center' }}>
+                  <p style={{ fontSize: 20, fontWeight: 600, margin: '0 0 1rem', color: '#fff', fontStyle: 'italic' }}>
+                    "{generatedWorkout.gymSummary}"
                   </p>
-                </div>
-              ))}
-
-              <h3 style={{ marginTop: '1.5rem' }}>Cool Down (60 sec)</h3>
-              <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: '1.5rem' }}>
-                {generatedWorkout.cooldown}
-              </p>
-
-              <button className="button button-primary" onClick={startOver} style={{ width: '100%', padding: '0.75rem' }}>
-                Generate Another Workout
-              </button>
-            </div>
-          )}
-
-          {selectedExercise && (
-            <div style={{ textAlign: 'center' }}>
-              <button className="button" onClick={() => setSelectedExercise(null)} style={{ marginBottom: '1.5rem', width: '100%' }}>
-                ← Back to Workout
-              </button>
-              <h2 style={{ fontSize: 24 }}>{selectedExercise.exercise}</h2>
-              
-              <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: '1.5rem' }}>
-                {EXERCISE_DATABASE[selectedExercise.exercise]?.description}
-              </p>
-
-              <div style={{ background: 'var(--color-background-secondary)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1.5rem', textAlign: 'left' }}>
-                <h3 style={{ textAlign: 'center', marginBottom: '1rem' }}>
-                  {difficulty.charAt(0).toUpperCase() + difficulty.slice(1)} Level Breakdown
-                </h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', margin: '0 0 0.25rem' }}>Reps/Time</p>
-                    <p style={{ fontSize: 18, fontWeight: 500, margin: 0, color: 'var(--color-text-primary)' }}>
-                      {EXERCISE_DATABASE[selectedExercise.exercise]?.[difficulty].reps}
-                    </p>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', margin: '0 0 0.25rem' }}>Sets</p>
-                    <p style={{ fontSize: 18, fontWeight: 500, margin: 0, color: 'var(--color-text-primary)' }}>
-                      {EXERCISE_DATABASE[selectedExercise.exercise]?.[difficulty].sets}
-                    </p>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', margin: '0 0 0.25rem' }}>Rest</p>
-                    <p style={{ fontSize: 18, fontWeight: 500, margin: 0, color: 'var(--color-text-primary)' }}>
-                      {EXERCISE_DATABASE[selectedExercise.exercise]?.[difficulty].rest}
-                    </p>
+                  <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                    <span className="badge badge-info">{goal}</span>
+                    <span className={`badge badge-${difficulty}`}>{difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}</span>
+                    <span className="badge badge-success">{timeLimit} min</span>
                   </div>
                 </div>
-              </div>
 
-              <div style={{ background: 'var(--color-background-warning)', padding: '1.25rem', borderRadius: '12px', marginBottom: '1.5rem', textAlign: 'left' }}>
-                <h3 style={{ color: 'var(--color-text-warning)' }}>Form Tips</h3>
-                <p style={{ fontSize: 13, color: 'var(--color-text-warning)', margin: 0 }}>
-                  {EXERCISE_DATABASE[selectedExercise.exercise]?.form}
-                </p>
-              </div>
+                <h3>Warm-Up (2-3 Min)</h3>
+                <p style={{ marginBottom: '2rem' }}>{generatedWorkout.warmup}</p>
 
-              <button className="button button-primary" onClick={() => setSelectedExercise(null)} style={{ width: '100%', padding: '0.75rem' }}>
-                Got It, Back to Workout
-              </button>
-            </div>
-          )}
+                <h3>Main Circuit</h3>
+                {generatedWorkout.mainCircuit.map((ex, idx) => (
+                  <button key={idx} onClick={() => setSelectedExercise(ex)} className="exercise-card">
+                    <p style={{ fontSize: 16, fontWeight: 600, margin: '0 0 0.5rem', color: '#fff' }}>{ex.exercise}</p>
+                    <p style={{ fontSize: 14, color: '#9ca3af', margin: '0 0 0.25rem' }}>{ex.description}</p>
+                    <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 0.75rem' }}>{ex.duration}</p>
+                    <p style={{ fontSize: 12, color: '#60a5fa' }}>👉 Click to view details</p>
+                  </button>
+                ))}
+
+                <h3 style={{ marginTop: '2rem' }}>The MacGyver Move</h3>
+                <div style={{ background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(5, 150, 105, 0.1))', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '16px', padding: '1.5rem', marginBottom: '2rem' }}>
+                  <p style={{ fontSize: 16, fontWeight: 600, margin: '0 0 0.75rem', color: '#10b981' }}>{generatedWorkout.macgyverMove.name}</p>
+                  <p style={{ fontSize: 14, color: '#6ee7b7', margin: 0 }}>{generatedWorkout.macgyverMove.description}</p>
+                </div>
+
+                <h3>Safety Tips</h3>
+                {generatedWorkout.tips.map((tip, idx) => (
+                  <div key={idx} style={{ background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.1))', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '12px', padding: '1rem', marginBottom: '0.75rem' }}>
+                    <p style={{ fontSize: 14, color: '#fcd34d', margin: 0 }}>✓ {tip}</p>
+                  </div>
+                ))}
+
+                <h3 style={{ marginTop: '2rem' }}>Cool Down (60 sec)</h3>
+                <p style={{ marginBottom: '2rem' }}>{generatedWorkout.cooldown}</p>
+
+                <div className="button-group">
+                  <button className="button button-secondary" onClick={shareWorkout} style={{ flex: 1 }}>
+                    📤 Share Workout
+                  </button>
+                  <button className="button button-primary" onClick={startOver} style={{ flex: 1 }}>
+                    Generate Another
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {selectedExercise && (
+              <div style={{ textAlign: 'center' }}>
+                <button className="button" onClick={() => setSelectedExercise(null)} style={{ marginBottom: '2rem', width: '100%' }}>
+                  ← Back to Workout
+                </button>
+                <h2>{selectedExercise.exercise}</h2>
+                <p style={{ marginBottom: '1.5rem' }}>{EXERCISE_DATABASE[selectedExercise.exercise]?.description}</p>
+
+                <div className="stat-box">
+                  <h3 style={{ marginTop: 0 }}>{difficulty.charAt(0).toUpperCase() + difficulty.slice(1)} Level</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginTop: '1rem' }}>
+                    <div>
+                      <div className="stat-label">Reps/Time</div>
+                      <div className="stat-value">{EXERCISE_DATABASE[selectedExercise.exercise]?.[difficulty].reps}</div>
+                    </div>
+                    <div>
+                      <div className="stat-label">Sets</div>
+                      <div className="stat-value">{EXERCISE_DATABASE[selectedExercise.exercise]?.[difficulty].sets}</div>
+                    </div>
+                    <div>
+                      <div className="stat-label">Rest</div>
+                      <div className="stat-value">{EXERCISE_DATABASE[selectedExercise.exercise]?.[difficulty].rest}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.1))', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '16px', padding: '1.5rem', marginBottom: '1.5rem', textAlign: 'left' }}>
+                  <h3 style={{ marginTop: 0, color: '#fbbf24' }}>Form Tips</h3>
+                  <p style={{ margin: 0, color: '#fcd34d' }}>{EXERCISE_DATABASE[selectedExercise.exercise]?.form}</p>
+                </div>
+
+                <button className="button button-primary" onClick={() => setSelectedExercise(null)} style={{ width: '100%', padding: '0.875rem' }}>
+                  Got It, Back to Workout
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
