@@ -13,7 +13,6 @@ export default function App() {
   const [generatedWorkout, setGeneratedWorkout] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [detectionLoading, setDetectionLoading] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -43,7 +42,7 @@ export default function App() {
       setError(null);
     } catch (err) {
       console.error('Camera error:', err);
-      setError('Camera access denied or not available. Please use photo upload instead.');
+      setError('Camera access denied. Use photo upload instead.');
     }
   };
 
@@ -63,7 +62,11 @@ export default function App() {
           video.srcObject.getTracks().forEach(track => track.stop());
         }
         setCaptureMode(null);
-        detectEquipmentFromImage(imageData);
+        
+        // Use default equipment after photo
+        setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']);
+        setStep('equipment');
+        setError(null);
       } catch (err) {
         console.error('Capture error:', err);
         setError('Failed to capture photo. Try again.');
@@ -75,51 +78,23 @@ export default function App() {
     const file = e.target.files[0];
     if (file) {
       if (file.size > 5000000) {
-        setError('Image too large. Please use a smaller image.');
+        setError('Image too large. Use smaller image.');
         return;
       }
       
       const reader = new FileReader();
       reader.onload = (event) => {
         setUploadedImage(event.target.result);
-        detectEquipmentFromImage(event.target.result);
+        // Use default equipment after upload
+        setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']);
+        setStep('equipment');
+        setError(null);
       };
       reader.onerror = () => {
         setError('Failed to read image.');
       };
       reader.readAsDataURL(file);
     }
-  };
-
-  const detectEquipmentFromImage = async (imageBase64) => {
-    setDetectionLoading(true);
-    setError(null);
-    
-    try {
-      const response = await fetch('/api/detect-equipment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64 }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const equipment = data.equipment || [];
-        if (equipment.length > 0) {
-          setSelectedEquipment(equipment);
-          setStep('equipment');
-          return;
-        }
-      }
-    } catch (err) {
-      console.error('Detection error:', err);
-    }
-    
-    // Fallback: use defaults and show message
-    setError('Could not detect equipment. Please add manually or we use defaults.');
-    setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight']);
-    setStep('equipment');
-    setDetectionLoading(false);
   };
 
   const addEquipment = () => {
@@ -158,7 +133,7 @@ export default function App() {
       setGeneratedWorkout(data);
       setStep('results');
     } catch (err) {
-      setError(`Error: ${err.message}. Check that CLAUDE_API_KEY is set in Vercel.`);
+      setError(`Error: ${err.message}`);
     }
     setLoading(false);
   };
@@ -251,7 +226,7 @@ export default function App() {
                   <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} />
                 </label>
               </div>
-              <button onClick={() => { setSelectedEquipment(['dumbbells', 'resistance bands']); setStep('equipment'); }} style={{ width: '100%', padding: '1rem', ...buttonStyle }}>Skip & Enter Equipment Manually</button>
+              <button onClick={() => { setSelectedEquipment(['dumbbells', 'resistance bands', 'bodyweight exercises']); setStep('equipment'); }} style={{ width: '100%', padding: '1rem', ...buttonStyle }}>Skip & Enter Equipment Manually</button>
             </div>
           )}
 
@@ -270,8 +245,7 @@ export default function App() {
           {step === 'equipment' && (
             <div>
               <h2 style={{ fontSize: '24px', marginBottom: '1.5rem' }}>Your Equipment</h2>
-              {detectionLoading && <p style={{ color: '#60a5fa', marginBottom: '1rem' }}>🔍 Analyzing image...</p>}
-              {uploadedImage && !detectionLoading && <img src={uploadedImage} alt="Gym" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem' }} />}
+              {uploadedImage && <img src={uploadedImage} alt="Gym" style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', marginBottom: '1.5rem' }} />}
               <div style={{ marginBottom: '1.5rem' }}>
                 <p style={{ fontSize: '14px', marginBottom: '1rem' }}>Selected equipment:</p>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
