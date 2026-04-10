@@ -1,5 +1,5 @@
 // api/detect-equipment.js
-// Equipment detection using Claude Vision API - FIXED VERSION
+// Equipment detection using Claude Vision API - JSON FIX
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -17,36 +17,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Extract pure base64 (remove data:image/jpeg;base64, prefix if present)
+    // Extract pure base64
     let pureBase64 = imageBase64;
     if (imageBase64.includes(',')) {
       pureBase64 = imageBase64.split(',')[1];
     }
-
-    // Claude Vision API expects clean base64 without any prefix
-    const requestBody = {
-      model: 'claude-3-5-sonnet-20241022',
-      max_tokens: 300,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/jpeg',
-                data: pureBase64,
-              },
-            },
-            {
-              type: 'text',
-              text: 'What gym equipment do you see in this image? List all visible fitness equipment like dumbbells, barbells, benches, machines, resistance bands, kettlebells, etc. Return ONLY a JSON array of equipment names like: ["dumbbells", "barbell", "bench press", "resistance bands"]. If no gym equipment visible, return: ["dumbbells", "resistance bands", "bodyweight exercises"]',
-            },
-          ],
-        },
-      ],
-    };
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -55,49 +30,77 @@ export default async function handler(req, res) {
         'x-api-key': process.env.CLAUDE_API_KEY,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+        model: 'claude-3-5-sonnet-20241022',
+        max_tokens: 200,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: 'image/jpeg',
+                  data: pureBase64,
+                },
+              },
+              {
+                type: 'text',
+                text: 'Analyze this gym image. List ALL visible fitness equipment. You MUST respond with ONLY a JSON array. No other text. No markdown. Just the array.\n\nExample response:\n["dumbbells", "barbell", "bench", "treadmill"]\n\nIf no gym equipment, respond:\n["dumbbells", "resistance bands", "bodyweight exercises"]\n\nRespond with ONLY the JSON array, nothing else.',
+              },
+            ],
+          },
+        ],
+      }),
     });
 
     if (!response.ok) {
       const errorData = await response.json();
       console.error('Claude API error:', errorData);
-      
-      // Return defaults instead of error
       return res.status(200).json({
         equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
-        error: 'Detection API error, using defaults',
       });
     }
 
     const data = await response.json();
-    const textContent = data.content[0]?.text || '';
+    const textContent = (data.content[0]?.text || '').trim();
 
-    // Try to parse the JSON response
+    console.log('Raw response:', textContent);
+
+    // Try to extract JSON array from response
+    let equipment = null;
+    
+    // Try direct parse first
     try {
-      const equipment = JSON.parse(textContent);
-      
-      if (Array.isArray(equipment) && equipment.length > 0) {
-        return res.status(200).json({ equipment });
-      } else {
-        throw new Error('Invalid equipment array');
+      equipment = JSON.parse(textContent);
+    } catch (e) {
+      // If it fails, try to find JSON array in the text
+      const jsonMatch = textContent.match(/\[.*\]/s);
+      if (jsonMatch) {
+        try {
+          equipment = JSON.parse(jsonMatch[0]);
+        } catch (e2) {
+          console.error('Could not parse JSON:', e2);
+        }
       }
-    } catch (parseErr) {
-      console.error('Parse error:', parseErr, 'Response:', textContent);
-      
-      // Return defaults
-      return res.status(200).json({
-        equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
-        error: 'Could not parse equipment',
-      });
     }
+
+    // If we got valid equipment array, return it
+    if (Array.isArray(equipment) && equipment.length > 0) {
+      return res.status(200).json({ equipment });
+    }
+
+    // Fallback to defaults
+    console.log('No valid equipment detected, using defaults');
+    return res.status(200).json({
+      equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
+    });
 
   } catch (error) {
     console.error('Detection error:', error);
-    
-    // Always return defaults instead of failing
     return res.status(200).json({
       equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
-      error: error.message,
     });
   }
 }
