@@ -1,5 +1,5 @@
 // api/detect-equipment.js
-// Equipment detection using Claude Vision API - JSON FIX
+// Equipment detection - FINAL VERSION with robust JSON parsing
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -32,7 +32,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 200,
+        max_tokens: 100,
         messages: [
           {
             role: 'user',
@@ -47,7 +47,7 @@ export default async function handler(req, res) {
               },
               {
                 type: 'text',
-                text: 'Analyze this gym image. List ALL visible fitness equipment. You MUST respond with ONLY a JSON array. No other text. No markdown. Just the array.\n\nExample response:\n["dumbbells", "barbell", "bench", "treadmill"]\n\nIf no gym equipment, respond:\n["dumbbells", "resistance bands", "bodyweight exercises"]\n\nRespond with ONLY the JSON array, nothing else.',
+                text: 'IMPORTANT: Respond with ONLY a JSON array. No markdown. No code blocks. No explanation.\n\nList all visible gym equipment in this image:\n["item1", "item2", "item3"]\n\nIf no gym equipment visible:\n["dumbbells", "resistance bands", "bodyweight exercises"]',
               },
             ],
           },
@@ -57,48 +57,47 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('Claude API error:', errorData);
+      console.error('API error:', errorData);
       return res.status(200).json({
         equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
       });
     }
 
     const data = await response.json();
-    const textContent = (data.content[0]?.text || '').trim();
+    let textContent = (data.content[0]?.text || '').trim();
 
     console.log('Raw response:', textContent);
 
-    // Try to extract JSON array from response
+    // Remove markdown code blocks if present
+    textContent = textContent.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
+
+    // Extract JSON array - look for [ ... ]
     let equipment = null;
     
-    // Try direct parse first
-    try {
-      equipment = JSON.parse(textContent);
-    } catch (e) {
-      // If it fails, try to find JSON array in the text
-      const jsonMatch = textContent.match(/\[.*\]/s);
-      if (jsonMatch) {
-        try {
-          equipment = JSON.parse(jsonMatch[0]);
-        } catch (e2) {
-          console.error('Could not parse JSON:', e2);
-        }
+    // Try to find JSON array pattern
+    const arrayMatch = textContent.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        equipment = JSON.parse(arrayMatch[0]);
+        console.log('Parsed equipment:', equipment);
+      } catch (e) {
+        console.error('Failed to parse extracted JSON:', e);
       }
     }
 
-    // If we got valid equipment array, return it
+    // If we got a valid array, return it
     if (Array.isArray(equipment) && equipment.length > 0) {
       return res.status(200).json({ equipment });
     }
 
-    // Fallback to defaults
-    console.log('No valid equipment detected, using defaults');
+    // Fallback
+    console.log('Using fallback equipment');
     return res.status(200).json({
       equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
     });
 
   } catch (error) {
-    console.error('Detection error:', error);
+    console.error('Fatal error:', error);
     return res.status(200).json({
       equipment: ['dumbbells', 'resistance bands', 'bodyweight exercises'],
     });
